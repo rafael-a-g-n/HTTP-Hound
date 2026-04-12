@@ -1,13 +1,20 @@
 import argparse
-from collections import Counter, deque
-from concurrent.futures import ThreadPoolExecutor
 import csv
 import time
 import urllib.robotparser
+from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+# Retry config for transient network errors in probe_link.
+MAX_RETRIES = 2
+RETRY_BACKOFF = 1.0  # seconds to wait before each successive retry
+
+# Redirect chains longer than this are flagged as an SEO concern.
+MAX_REDIRECT_HOPS = 3
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -98,7 +105,7 @@ def extract_page_resources(page_url, html):
         ("a", "href"),     # hyperlinks
         ("img", "src"),    # images
         ("link", "href"),  # stylesheets / favicons
-        ("script", "src"), # JavaScript files
+        ("script", "src"),  # JavaScript files
     ]
 
     urls = []
@@ -111,8 +118,22 @@ def extract_page_resources(page_url, html):
     return urls
 
 
+def _build_redirect_chain(response):
+    """Return the ordered list of URLs traversed to reach the final page."""
+    chain = [r.url for r in response.history]
+    chain.append(response.url)
+    return chain
+
+
 def probe_link(url, timeout):
-    """Check a link with HEAD first and retry with GET when needed."""
+    """Check a link with HEAD first, fall back to GET, retry on failure.
+
+    Returns a dict with status, classification, method, final_url,
+    redirect_hops, and redirect_chain.
+    """
+    head_status = None
+
+    # --- HEAD attempt ---
     try:
         head_response = requests.head(
             url,
@@ -121,13 +142,21 @@ def probe_link(url, timeout):
             timeout=timeout,
         )
         head_status = head_response.status_code
+        chain = _build_redirect_chain(head_response)
+        hops = len(chain) - 1
 
         if head_status < 400:
+            # Flag redirect chains that are too long as an SEO concern.
+            classification = (
+                "redirect_chain" if hops > MAX_REDIRECT_HOPS else "ok"
+            )
             return {
                 "status": head_status,
-                "classification": "ok",
+                "classification": classification,
                 "method": "HEAD",
                 "final_url": head_response.url,
+                "redirect_hops": hops,
+                "redirect_chain": " -> ".join(chain),
             }
 
         if head_status not in {403, 404, 405}:
@@ -136,57 +165,87 @@ def probe_link(url, timeout):
                 "classification": "broken",
                 "method": "HEAD",
                 "final_url": head_response.url,
+                "redirect_hops": hops,
+                "redirect_chain": " -> ".join(chain),
             }
     except requests.exceptions.RequestException:
         head_status = None
 
-    try:
-        # Some sites reject HEAD requests but answer normally to GET.
-        get_response = requests.get(
-            url,
-            headers=REQUEST_HEADERS,
-            allow_redirects=True,
-            timeout=timeout,
-            stream=True,
-        )
-        get_status = get_response.status_code
-        final_url = get_response.url
-        get_response.close()
+    # --- GET attempt with retry backoff ---
+    # Used when HEAD is rejected (403/404/405) or fails outright.
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        if attempt:
+            # Wait before retrying to handle transient network errors.
+            time.sleep(RETRY_BACKOFF * attempt)
+        try:
+            # Some sites reject HEAD requests but answer normally to GET.
+            get_response = requests.get(
+                url,
+                headers=REQUEST_HEADERS,
+                allow_redirects=True,
+                timeout=timeout,
+                stream=True,
+            )
+            get_status = get_response.status_code
+            chain = _build_redirect_chain(get_response)
+            hops = len(chain) - 1
+            get_response.close()
 
-        if get_status < 400:
+            if get_status < 400:
+                classification = (
+                    "redirect_chain" if hops > MAX_REDIRECT_HOPS else "ok"
+                )
+                return {
+                    "status": get_status,
+                    "classification": classification,
+                    "method": "GET",
+                    "final_url": chain[-1],
+                    "redirect_hops": hops,
+                    "redirect_chain": " -> ".join(chain),
+                }
+
+            classification = (
+                "blocked" if get_status in {401, 403} else "broken"
+            )
             return {
                 "status": get_status,
-                "classification": "ok",
+                "classification": classification,
                 "method": "GET",
-                "final_url": final_url,
+                "final_url": chain[-1],
+                "redirect_hops": hops,
+                "redirect_chain": " -> ".join(chain),
             }
+        except requests.exceptions.RequestException:
+            pass  # retry on next iteration or fall through to failure
 
-        classification = "blocked" if get_status in {401, 403} else "broken"
-        return {
-            "status": get_status,
-            "classification": classification,
-            "method": "GET",
-            "final_url": final_url,
-        }
-    except requests.exceptions.RequestException:
-        return {
-            "status": (
-                head_status if head_status is not None else "FAILED TO CONNECT"
-            ),
-            "classification": "failed",
-            "method": "GET" if head_status is not None else "NONE",
-            "final_url": url,
-        }
+    # All retries exhausted — classify as a connection failure.
+    return {
+        "status": (
+            head_status if head_status is not None else "FAILED TO CONNECT"
+        ),
+        "classification": "failed",
+        "method": "GET" if head_status is not None else "NONE",
+        "final_url": url,
+        "redirect_hops": 0,
+        "redirect_chain": url,
+    }
 
 
 def record_result(results, url, result):
-    """Store only links that still fail after probing."""
+    """Store links that fail or have a notable redirect chain."""
     classification = result["classification"]
     status = result["status"]
     method = result["method"]
+    hops = result["redirect_hops"]
 
-    if classification in {"broken", "blocked", "failed"}:
-        print(f"[{classification.upper()}] {status} via {method} - {url}")
+    notable = {"broken", "blocked", "failed", "redirect_chain"}
+    if classification in notable:
+        hop_info = f" [{hops} hops]" if hops else ""
+        print(
+            f"[{classification.upper()}] {status} via {method}"
+            f"{hop_info} - {url}"
+        )
         results.append(
             {
                 "url": url,
@@ -194,6 +253,8 @@ def record_result(results, url, result):
                 "classification": classification,
                 "method": method,
                 "final_url": result["final_url"],
+                "redirect_hops": hops,
+                "redirect_chain": result["redirect_chain"],
             }
         )
         return
@@ -289,8 +350,12 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
 
 
 def save_to_csv(problem_links, crawl_stats):
+    """Write a structured CSV report with summary, counts, and details."""
     filename = "broken_links_report.csv"
-    keys = ["url", "status", "classification", "method", "final_url"]
+    keys = [
+        "url", "status", "classification", "method",
+        "final_url", "redirect_hops", "redirect_chain",
+    ]
 
     type_counts = Counter(link["classification"] for link in problem_links)
     status_counts = Counter(str(link["status"]) for link in problem_links)
