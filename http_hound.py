@@ -1,5 +1,5 @@
-from collections import deque
-from collections import Counter
+import argparse
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 import csv
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -18,9 +18,6 @@ REQUEST_HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-MAX_LINK_WORKERS = 10
-
 
 def build_session():
     """Create a session that looks closer to a browser request."""
@@ -45,9 +42,9 @@ def is_internal_url(url, base_netloc):
     return parsed_url.scheme in {"http", "https"} and parsed_url.netloc == base_netloc
 
 
-def fetch_page(url, session):
+def fetch_page(url, session, timeout):
     """Fetch an HTML page for crawling."""
-    response = session.get(url, headers=REQUEST_HEADERS, timeout=10)
+    response = session.get(url, headers=REQUEST_HEADERS, timeout=timeout)
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
@@ -70,14 +67,14 @@ def extract_page_links(page_url, html):
     return links
 
 
-def probe_link(url):
+def probe_link(url, timeout):
     """Check a link with HEAD first and retry with GET when needed."""
     try:
         head_response = requests.head(
             url,
             headers=REQUEST_HEADERS,
             allow_redirects=True,
-            timeout=5,
+            timeout=timeout,
         )
         head_status = head_response.status_code
 
@@ -105,7 +102,7 @@ def probe_link(url):
             url,
             headers=REQUEST_HEADERS,
             allow_redirects=True,
-            timeout=8,
+            timeout=timeout,
             stream=True,
         )
         get_status = get_response.status_code
@@ -160,7 +157,7 @@ def record_result(results, url, result):
     print(f"[OK] {status} via {method} - {url}")
 
 
-def check_links(base_url):
+def check_links(base_url, workers=10, timeout=10):
     base_url = normalize_url(base_url)
     print(f"--- Starting crawl on: {base_url} ---")
 
@@ -178,7 +175,7 @@ def check_links(base_url):
         print(f"Crawling page: {current_page}")
 
         try:
-            response = fetch_page(current_page, session)
+            response = fetch_page(current_page, session, timeout)
         except requests.exceptions.RequestException as error:
             print(f"Could not crawl page: {current_page} ({error})")
             visited_pages.add(current_page)
@@ -204,14 +201,14 @@ def check_links(base_url):
 
     print(
         f"\nProbing {len(links_to_probe)} unique links "
-        f"with {MAX_LINK_WORKERS} workers..."
+        f"with {workers} workers..."
     )
 
-    with ThreadPoolExecutor(max_workers=MAX_LINK_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         # executor.map preserves input order, so URL/result pairs stay aligned.
         for full_url, result in zip(
             links_to_probe,
-            executor.map(probe_link, links_to_probe),
+            executor.map(lambda url: probe_link(url, timeout), links_to_probe),
         ):
             record_result(results, full_url, result)
 
@@ -265,6 +262,28 @@ def save_to_csv(problem_links, crawl_stats):
     )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="HTTP Hound — crawl a site and report broken links."
+    )
+    parser.add_argument("url", help="Base URL of the site to crawl")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Number of concurrent link-probe workers (default: 10)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=10,
+        metavar="S",
+        help="Request timeout in seconds (default: 10)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    target_site = "Test Link"  # Replace with your target URL
-    check_links(target_site)
+    args = parse_args()
+    check_links(args.url, workers=args.workers, timeout=args.timeout)
