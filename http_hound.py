@@ -1,4 +1,5 @@
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import csv
 from urllib.parse import urldefrag, urljoin, urlparse
 
@@ -16,6 +17,8 @@ REQUEST_HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+MAX_LINK_WORKERS = 10
 
 
 def build_session():
@@ -66,10 +69,10 @@ def extract_page_links(page_url, html):
     return links
 
 
-def probe_link(url, session):
+def probe_link(url):
     """Check a link with HEAD first and retry with GET when needed."""
     try:
-        head_response = session.head(
+        head_response = requests.head(
             url,
             headers=REQUEST_HEADERS,
             allow_redirects=True,
@@ -97,7 +100,7 @@ def probe_link(url, session):
 
     try:
         # Some sites reject HEAD requests but answer normally to GET.
-        get_response = session.get(
+        get_response = requests.get(
             url,
             headers=REQUEST_HEADERS,
             allow_redirects=True,
@@ -125,7 +128,9 @@ def probe_link(url, session):
         }
     except requests.exceptions.RequestException:
         return {
-            "status": head_status if head_status is not None else "FAILED TO CONNECT",
+            "status": (
+                head_status if head_status is not None else "FAILED TO CONNECT"
+            ),
             "classification": "failed",
             "method": "GET" if head_status is not None else "NONE",
             "final_url": url,
@@ -165,6 +170,7 @@ def check_links(base_url):
     visited_pages = set()
     checked_links = set()
     results = []
+    links_to_probe = []
 
     while pages_to_visit:
         current_page = pages_to_visit.popleft()
@@ -184,8 +190,7 @@ def check_links(base_url):
         for full_url in extract_page_links(current_page, response.text):
             if full_url not in checked_links:
                 checked_links.add(full_url)
-                result = probe_link(full_url, session)
-                record_result(results, full_url, result)
+                links_to_probe.append(full_url)
 
             if not is_internal_url(full_url, base_netloc):
                 continue
@@ -195,6 +200,19 @@ def check_links(base_url):
 
             queued_pages.add(full_url)
             pages_to_visit.append(full_url)
+
+    print(
+        f"\nProbing {len(links_to_probe)} unique links "
+        f"with {MAX_LINK_WORKERS} workers..."
+    )
+
+    with ThreadPoolExecutor(max_workers=MAX_LINK_WORKERS) as executor:
+        # executor.map preserves input order, so URL/result pairs stay aligned.
+        for full_url, result in zip(
+            links_to_probe,
+            executor.map(probe_link, links_to_probe),
+        ):
+            record_result(results, full_url, result)
 
     save_to_csv(results)
 
@@ -208,7 +226,10 @@ def save_to_csv(broken_links):
         writer.writeheader()
         writer.writerows(broken_links)
 
-    print(f"\n--- Report generated: {filename} ({len(broken_links)} issues found) ---")
+    print(
+        f"\n--- Report generated: {filename} "
+        f"({len(broken_links)} issues found) ---"
+    )
 
 
 if __name__ == "__main__":
