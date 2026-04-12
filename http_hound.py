@@ -239,7 +239,7 @@ def probe_link(url, timeout):
     }
 
 
-def record_result(results, url, result, link_type):
+def record_result(results, url, result, link_type, source_page):
     """Store links that fail or have a notable redirect chain."""
     classification = result["classification"]
     status = result["status"]
@@ -263,6 +263,7 @@ def record_result(results, url, result, link_type):
                 "redirect_hops": hops,
                 "redirect_chain": result["redirect_chain"],
                 "link_type": link_type,
+                "source_page": source_page,
             }
         )
         return
@@ -293,6 +294,8 @@ def check_links(
     links_to_probe = []
     # Maps each URL to "internal" or "external" for report separation.
     link_types = {}
+    # Maps each URL to the first page on which it was discovered.
+    source_pages = {}
 
     while pages_to_visit:
         current_page, depth = pages_to_visit.popleft()
@@ -324,6 +327,8 @@ def check_links(
             if full_url not in checked_links:
                 checked_links.add(full_url)
                 links_to_probe.append(full_url)
+                # Record the page where this URL was first seen.
+                source_pages[full_url] = current_page
                 # Record whether this resource belongs to the crawled site.
                 link_types[full_url] = (
                     "internal"
@@ -364,7 +369,10 @@ def check_links(
             unit="link",
         )
         for full_url, result in progress:
-            record_result(results, full_url, result, link_types[full_url])
+            record_result(
+                results, full_url, result,
+                link_types[full_url], source_pages[full_url],
+            )
 
     crawl_stats = {
         "base_url": base_url,
@@ -383,7 +391,8 @@ def save_to_csv(problem_links, crawl_stats):
     filename = "broken_links_report.csv"
     keys = [
         "url", "status", "classification", "method",
-        "final_url", "redirect_hops", "redirect_chain", "link_type",
+        "final_url", "redirect_hops", "redirect_chain",
+        "link_type", "source_page",
     ]
 
     type_counts = Counter(link["classification"] for link in problem_links)
