@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import time
 import urllib.robotparser
 from collections import Counter, deque
@@ -8,6 +9,13 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+try:
+    from tqdm import tqdm  # type: ignore[import-untyped]
+except ImportError:
+    # tqdm is optional; fall back to a no-op wrapper when not installed.
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 # Retry config for transient network errors in probe_link.
 MAX_RETRIES = 2
@@ -173,7 +181,6 @@ def probe_link(url, timeout):
 
     # --- GET attempt with retry backoff ---
     # Used when HEAD is rejected (403/404/405) or fails outright.
-    last_error = None
     for attempt in range(MAX_RETRIES + 1):
         if attempt:
             # Wait before retrying to handle transient network errors.
@@ -232,7 +239,7 @@ def probe_link(url, timeout):
     }
 
 
-def record_result(results, url, result):
+def record_result(results, url, result, link_type):
     """Store links that fail or have a notable redirect chain."""
     classification = result["classification"]
     status = result["status"]
@@ -255,6 +262,7 @@ def record_result(results, url, result):
                 "final_url": result["final_url"],
                 "redirect_hops": hops,
                 "redirect_chain": result["redirect_chain"],
+                "link_type": link_type,
             }
         )
         return
@@ -262,7 +270,10 @@ def record_result(results, url, result):
     print(f"[OK] {status} via {method} - {url}")
 
 
-def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
+def check_links(
+    base_url, workers=10, timeout=10, max_depth=None,
+    delay=0.0, output_format="csv"
+):
     """Crawl base_url and probe all discovered links for breakage."""
     base_url = normalize_url(base_url)
     print(f"--- Starting crawl on: {base_url} ---")
@@ -280,6 +291,8 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
     checked_links = set()
     results = []
     links_to_probe = []
+    # Maps each URL to "internal" or "external" for report separation.
+    link_types = {}
 
     while pages_to_visit:
         current_page, depth = pages_to_visit.popleft()
@@ -311,6 +324,12 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
             if full_url not in checked_links:
                 checked_links.add(full_url)
                 links_to_probe.append(full_url)
+                # Record whether this resource belongs to the crawled site.
+                link_types[full_url] = (
+                    "internal"
+                    if is_internal_url(full_url, base_netloc)
+                    else "external"
+                )
 
         # Only follow <a> href links to discover new pages to crawl.
         for full_url in extract_page_links(current_page, response.text):
@@ -334,11 +353,18 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # executor.map preserves input order, so URL/result pairs stay aligned.
-        for full_url, result in zip(
-            links_to_probe,
-            executor.map(lambda url: probe_link(url, timeout), links_to_probe),
-        ):
-            record_result(results, full_url, result)
+        probe_iter = executor.map(
+            lambda url: probe_link(url, timeout), links_to_probe
+        )
+        # tqdm wraps the iterator to display a real-time progress bar.
+        progress = tqdm(
+            zip(links_to_probe, probe_iter),
+            total=len(links_to_probe),
+            desc="Probing links",
+            unit="link",
+        )
+        for full_url, result in progress:
+            record_result(results, full_url, result, link_types[full_url])
 
     crawl_stats = {
         "base_url": base_url,
@@ -346,7 +372,10 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
         "unique_links_parsed": len(checked_links),
         "problem_links_found": len(results),
     }
-    save_to_csv(results, crawl_stats)
+    if output_format in {"csv", "both"}:
+        save_to_csv(results, crawl_stats)
+    if output_format in {"json", "both"}:
+        save_to_json(results, crawl_stats)
 
 
 def save_to_csv(problem_links, crawl_stats):
@@ -354,11 +383,19 @@ def save_to_csv(problem_links, crawl_stats):
     filename = "broken_links_report.csv"
     keys = [
         "url", "status", "classification", "method",
-        "final_url", "redirect_hops", "redirect_chain",
+        "final_url", "redirect_hops", "redirect_chain", "link_type",
     ]
 
     type_counts = Counter(link["classification"] for link in problem_links)
     status_counts = Counter(str(link["status"]) for link in problem_links)
+
+    # Split into internal and external for separate report sections.
+    internal_links = [
+        link for link in problem_links if link["link_type"] == "internal"
+    ]
+    external_links = [
+        link for link in problem_links if link["link_type"] == "external"
+    ]
 
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -388,16 +425,53 @@ def save_to_csv(problem_links, crawl_stats):
             writer.writerow([status, count])
         writer.writerow([])
 
-        writer.writerow(["Problem Link Details"])
+        writer.writerow(["Internal Problem Links"])
         writer.writerow(keys)
-        for row in problem_links:
+        for row in internal_links:
+            writer.writerow([row[key] for key in keys])
+        writer.writerow([])
+
+        writer.writerow(["External Problem Links"])
+        writer.writerow(keys)
+        for row in external_links:
             writer.writerow([row[key] for key in keys])
 
     print(
-        f"\n--- Report generated: {filename} "
+        f"\n--- CSV report generated: {filename} "
         f"({crawl_stats['problem_links_found']} issues found out of "
         f"{crawl_stats['unique_links_parsed']} parsed links) ---"
     )
+
+
+def save_to_json(problem_links, crawl_stats):
+    """Write a structured JSON report for programmatic consumption."""
+    filename = "broken_links_report.json"
+
+    type_counts = Counter(link["classification"] for link in problem_links)
+    status_counts = Counter(str(link["status"]) for link in problem_links)
+
+    # Split problem links by origin for easier downstream processing.
+    internal = [
+        link for link in problem_links if link["link_type"] == "internal"
+    ]
+    external = [
+        link for link in problem_links if link["link_type"] == "external"
+    ]
+
+    report = {
+        "crawl_summary": crawl_stats,
+        "counts_by_type": dict(sorted(type_counts.items())),
+        "counts_by_status": dict(sorted(status_counts.items())),
+        "problem_links": {
+            "internal": internal,
+            "external": external,
+        },
+    }
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(f"\n--- JSON report generated: {filename} ---")
 
 
 def parse_args():
@@ -433,6 +507,13 @@ def parse_args():
         metavar="S",
         help="Seconds to wait between page fetches (default: 0)",
     )
+    parser.add_argument(
+        "--format",
+        choices=["csv", "json", "both"],
+        default="csv",
+        metavar="FORMAT",
+        help="Output format: csv, json, or both (default: csv)",
+    )
     return parser.parse_args()
 
 
@@ -444,4 +525,5 @@ if __name__ == "__main__":
         timeout=args.timeout,
         max_depth=args.max_depth,
         delay=args.delay,
+        output_format=args.format,
     )
