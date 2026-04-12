@@ -5,6 +5,7 @@ import time
 import urllib.robotparser
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
+from html import escape as html_escape
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
@@ -380,10 +381,12 @@ def check_links(
         "unique_links_parsed": len(checked_links),
         "problem_links_found": len(results),
     }
-    if output_format in {"csv", "both"}:
+    if output_format in {"csv", "both", "all"}:
         save_to_csv(results, crawl_stats)
-    if output_format in {"json", "both"}:
+    if output_format in {"json", "both", "all"}:
         save_to_json(results, crawl_stats)
+    if output_format in {"html", "all"}:
+        save_to_html(results, crawl_stats)
 
 
 def save_to_csv(problem_links, crawl_stats):
@@ -483,6 +486,145 @@ def save_to_json(problem_links, crawl_stats):
     print(f"\n--- JSON report generated: {filename} ---")
 
 
+def save_to_html(problem_links, crawl_stats):
+    """Write a self-contained HTML report with styled, color-coded tables."""
+    filename = "broken_links_report.html"
+
+    type_counts = Counter(
+        link["classification"] for link in problem_links
+    )
+    status_counts = Counter(
+        str(link["status"]) for link in problem_links
+    )
+    internal_links = [
+        link for link in problem_links
+        if link["link_type"] == "internal"
+    ]
+    external_links = [
+        link for link in problem_links
+        if link["link_type"] == "external"
+    ]
+
+    # Row highlight class keyed by classification.
+    _row_css = {
+        "broken": "row-err",
+        "failed": "row-err",
+        "blocked": "row-warn",
+        "redirect_chain": "row-info",
+    }
+
+    def _detail_rows(links):
+        if not links:
+            return "<tr><td colspan='9'>No issues found.</td></tr>"
+        rows = []
+        for lnk in links:
+            css = _row_css.get(lnk["classification"], "")
+            rows.append(
+                f'<tr class="{css}">'
+                f'<td>{html_escape(lnk["url"])}</td>'
+                f'<td>{lnk["status"]}</td>'
+                f'<td>{html_escape(lnk["classification"])}</td>'
+                f'<td>{lnk["method"]}</td>'
+                f'<td>{html_escape(lnk["final_url"])}</td>'
+                f'<td>{lnk["redirect_hops"]}</td>'
+                f'<td>{html_escape(lnk["redirect_chain"])}</td>'
+                f'<td>{lnk["link_type"]}</td>'
+                f'<td>{html_escape(lnk["source_page"])}</td>'
+                "</tr>"
+            )
+        return "".join(rows)
+
+    def _count_rows(counts):
+        return "".join(
+            f"<tr><td>{html_escape(k)}</td><td>{v}</td></tr>"
+            for k, v in sorted(counts.items())
+        )
+
+    def _card(label, value):
+        return (
+            f'<div class="stat-card">'
+            f'<span class="label">{html_escape(str(label))}</span>'
+            f'<span class="value">{value}</span>'
+            "</div>"
+        )
+
+    # Plain string (not an f-string) so CSS braces need no escaping.
+    styles = (
+        "body{font-family:'Segoe UI',Arial,sans-serif;"
+        "background:#f5f7fa;color:#222;margin:0;padding:24px}"
+        "h1{color:#1a1a2e}"
+        "h2{color:#16213e;border-bottom:2px solid #dde;"
+        "padding-bottom:6px;margin-top:36px}"
+        ".summary{display:grid;grid-template-columns:repeat(4,1fr);"
+        "gap:16px;margin:20px 0}"
+        ".stat-card{background:#fff;border-radius:8px;"
+        "padding:18px 24px;box-shadow:0 1px 4px rgba(0,0,0,.1)}"
+        ".stat-card .label{display:block;font-size:.75rem;color:#666;"
+        "text-transform:uppercase;letter-spacing:.05em}"
+        ".stat-card .value{display:block;font-size:2rem;"
+        "font-weight:700;color:#1a1a2e;margin-top:4px}"
+        "table{width:100%;border-collapse:collapse;background:#fff;"
+        "border-radius:8px;overflow:hidden;"
+        "box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:28px}"
+        "th{background:#1a1a2e;color:#fff;padding:10px 14px;"
+        "text-align:left;font-size:.82rem}"
+        "td{padding:8px 14px;border-bottom:1px solid #eee;"
+        "font-size:.82rem;word-break:break-all}"
+        "tr:last-child td{border-bottom:none}"
+        "tr.row-err td{background:#fff0f0}"
+        "tr.row-warn td{background:#fff8ec}"
+        "tr.row-info td{background:#fffbe6}"
+    )
+
+    th_detail = (
+        "<tr>"
+        "<th>URL</th><th>Status</th><th>Classification</th>"
+        "<th>Method</th><th>Final URL</th><th>Hops</th>"
+        "<th>Redirect Chain</th><th>Type</th><th>Source Page</th>"
+        "</tr>"
+    )
+    base = html_escape(crawl_stats["base_url"])
+    n_int = len(internal_links)
+    n_ext = len(external_links)
+
+    doc = (
+        "<!DOCTYPE html>"
+        '<html lang="en"><head>'
+        '<meta charset="UTF-8">'
+        f"<title>HTTP Hound \u2014 {base}</title>"
+        f"<style>{styles}</style>"
+        "</head><body>"
+        "<h1>HTTP Hound Report</h1>"
+        f"<p>Crawled: <strong>{base}</strong></p>"
+        '<div class="summary">'
+        + _card("Pages Crawled", crawl_stats["pages_crawled"])
+        + _card("Links Parsed", crawl_stats["unique_links_parsed"])
+        + _card("Problems Found", crawl_stats["problem_links_found"])
+        + _card("Internal Issues", n_int)
+        + "</div>"
+        "<h2>Problem Links by Type</h2>"
+        "<table><thead>"
+        "<tr><th>Classification</th><th>Count</th></tr>"
+        f"</thead><tbody>{_count_rows(type_counts)}</tbody></table>"
+        "<h2>Problem Links by Status</h2>"
+        "<table><thead>"
+        "<tr><th>HTTP Status</th><th>Count</th></tr>"
+        f"</thead><tbody>{_count_rows(status_counts)}</tbody></table>"
+        f"<h2>Internal Problem Links ({n_int})</h2>"
+        f"<table><thead>{th_detail}</thead>"
+        f"<tbody>{_detail_rows(internal_links)}</tbody></table>"
+        f"<h2>External Problem Links ({n_ext})</h2>"
+        f"<table><thead>{th_detail}</thead>"
+        f"<tbody>{_detail_rows(external_links)}</tbody></table>"
+        "</body></html>"
+    )
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(doc)
+
+    print(f"\n--- HTML report generated: {filename} ---")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="HTTP Hound — crawl a site and report broken links."
@@ -518,10 +660,13 @@ def parse_args():
     )
     parser.add_argument(
         "--format",
-        choices=["csv", "json", "both"],
+        choices=["csv", "json", "html", "both", "all"],
         default="csv",
         metavar="FORMAT",
-        help="Output format: csv, json, or both (default: csv)",
+        help=(
+            "Output format: csv, json, html, "
+            "both (csv+json), or all (default: csv)"
+        ),
     )
     return parser.parse_args()
 

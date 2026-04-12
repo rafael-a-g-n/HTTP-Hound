@@ -19,6 +19,7 @@ HTTP-Hound crawls a target site, probes every discovered link, image, stylesheet
 | **robots.txt compliance** | Reads `/robots.txt` once before crawling and respects disallow rules |
 | **Rate limiting** | Configurable `--delay` between page fetches to avoid overwhelming the server |
 | **Browser-like headers** | Sends a realistic `User-Agent`, `Accept`, and `Accept-Language` header set to avoid bot-detection false positives |
+| **HTML report** | Self-contained browser report with color-coded tables: red for broken/failed, amber for blocked, yellow for long redirect chains |
 | **Structured CSV output** | Six-section report: crawl summary, counts by type, counts by status, and separate detail tables for internal vs. external problem links |
 | **JSON output** | Machine-readable report with the same structure for downstream processing or CI pipelines |
 | **Real-time progress bar** | `tqdm` progress bar during the probe phase; degrades gracefully when `tqdm` is not installed |
@@ -57,7 +58,7 @@ python http_hound.py <url> [options]
 | `--timeout S` | `10` | Request timeout in seconds |
 | `--max-depth D` | unlimited | Maximum BFS crawl depth from the base URL |
 | `--delay S` | `0` | Seconds to wait between page fetches |
-| `--format` | `csv` | Output format: `csv`, `json`, or `both` |
+| `--format` | `csv` | Output format: `csv`, `json`, `html`, `both` (csv+json), or `all` |
 
 ### Examples
 
@@ -76,6 +77,16 @@ python http_hound.py https://example.com --workers 20 --timeout 15 --format json
 python http_hound.py https://example.com --max-depth 3 --delay 0.5 --format both
 ```
 
+**HTML report for easy reading in a browser:**
+```bash
+python http_hound.py https://example.com --format html
+```
+
+**All three output formats at once:**
+```bash
+python http_hound.py https://example.com --format all
+```
+
 **Large site crawl with a generous timeout:**
 ```bash
 python http_hound.py https://example.com --workers 30 --timeout 20 --max-depth 5
@@ -86,6 +97,24 @@ python http_hound.py https://example.com --workers 30 --timeout 20 --max-depth 5
 ## Output
 
 Both report formats are saved in the working directory.
+
+### HTML — `broken_links_report.html`
+
+Open in any browser. The report includes:
+
+- **Stat cards** at the top: pages crawled, links parsed, problems found, internal issues
+- **Problem Links by Type** table — counts per classification
+- **Problem Links by Status** table — counts per HTTP status code
+- **Internal Problem Links** table — color-coded detail rows with `source_page`
+- **External Problem Links** table — same structure
+
+Row colors:
+
+| Color | Meaning |
+|---|---|
+| Red | `broken` or `failed` |
+| Amber | `blocked` (401/403) |
+| Yellow | `redirect_chain` (> 3 hops) |
 
 ### CSV — `broken_links_report.csv`
 
