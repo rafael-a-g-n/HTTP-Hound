@@ -1,4 +1,5 @@
 from collections import deque
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import csv
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -214,24 +215,56 @@ def check_links(base_url):
         ):
             record_result(results, full_url, result)
 
-    save_to_csv(results)
+    crawl_stats = {
+        "base_url": base_url,
+        "pages_crawled": len(visited_pages),
+        "unique_links_parsed": len(checked_links),
+        "problem_links_found": len(results),
+    }
+    save_to_csv(results, crawl_stats)
 
 
-def save_to_csv(broken_links):
+def save_to_csv(problem_links, crawl_stats):
     filename = "broken_links_report.csv"
     keys = ["url", "status", "classification", "method", "final_url"]
 
+    type_counts = Counter(link["classification"] for link in problem_links)
+    status_counts = Counter(str(link["status"]) for link in problem_links)
+
     with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        writer.writerows(broken_links)
+        writer = csv.writer(f)
+
+        writer.writerow(["HTTP Hound Crawl Summary"])
+        writer.writerow(["base_url", crawl_stats["base_url"]])
+        writer.writerow(["pages_crawled", crawl_stats["pages_crawled"]])
+        writer.writerow(["unique_links_parsed", crawl_stats["unique_links_parsed"]])
+        writer.writerow(["problem_links_found", crawl_stats["problem_links_found"]])
+        writer.writerow([])
+
+        writer.writerow(["Problem Links by Type"])
+        writer.writerow(["classification", "count"])
+        for classification, count in sorted(type_counts.items()):
+            writer.writerow([classification, count])
+        writer.writerow([])
+
+        writer.writerow(["Problem Links by Status"])
+        writer.writerow(["status", "count"])
+        for status, count in sorted(status_counts.items(), key=lambda item: item[0]):
+            writer.writerow([status, count])
+        writer.writerow([])
+
+        writer.writerow(["Problem Link Details"])
+        writer.writerow(keys)
+        for row in problem_links:
+            writer.writerow([row[key] for key in keys])
 
     print(
         f"\n--- Report generated: {filename} "
-        f"({len(broken_links)} issues found) ---"
+        f"({crawl_stats['problem_links_found']} issues found out of "
+        f"{crawl_stats['unique_links_parsed']} parsed links) ---"
     )
 
 
 if __name__ == "__main__":
-    target_site = "test link"  # Replace with your target URL
+    target_site = "Test Link"  # Replace with your target URL
     check_links(target_site)
