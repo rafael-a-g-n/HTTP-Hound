@@ -141,11 +141,11 @@ status, count
 ...
 
 Internal Problem Links
-url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type, source_page
+url, status, classification, method, redirect_hops, redirect_chain, link_type, source_page
 ...
 
 External Problem Links
-url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type, source_page
+url, status, classification, method, redirect_hops, redirect_chain, link_type, source_page
 ...
 ```
 
