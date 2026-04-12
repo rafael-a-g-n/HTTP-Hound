@@ -22,6 +22,7 @@ HTTP-Hound crawls a target site, probes every discovered link, image, stylesheet
 | **Structured CSV output** | Six-section report: crawl summary, counts by type, counts by status, and separate detail tables for internal vs. external problem links |
 | **JSON output** | Machine-readable report with the same structure for downstream processing or CI pipelines |
 | **Real-time progress bar** | `tqdm` progress bar during the probe phase; degrades gracefully when `tqdm` is not installed |
+| **Source page tracking** | Every problem link records the page it was found on — `source_page` column makes issues immediately actionable |
 | **Full CLI** | `argparse`-powered interface — no code changes needed to adjust any crawl parameter |
 
 ---
@@ -111,11 +112,11 @@ status, count
 ...
 
 Internal Problem Links
-url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type
+url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type, source_page
 ...
 
 External Problem Links
-url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type
+url, status, classification, method, final_url, redirect_hops, redirect_chain, link_type, source_page
 ...
 ```
 
