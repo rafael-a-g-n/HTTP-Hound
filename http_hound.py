@@ -73,7 +73,7 @@ def fetch_page(url, session, timeout):
 
 
 def extract_page_links(page_url, html):
-    """Extract normalized HTTP links from a page."""
+    """Extract normalized <a href> URLs used to drive BFS page crawling."""
     soup = BeautifulSoup(html, "html.parser")
     links = []
 
@@ -83,6 +83,32 @@ def extract_page_links(page_url, html):
             links.append(full_url)
 
     return links
+
+
+def extract_page_resources(page_url, html):
+    """Extract all resource URLs from a page for broken-link probing.
+
+    Covers hyperlinks, images, stylesheets, and scripts so that broken
+    assets are caught alongside broken navigation links.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Map each tag to the attribute that carries its URL.
+    tag_attr_pairs = [
+        ("a", "href"),     # hyperlinks
+        ("img", "src"),    # images
+        ("link", "href"),  # stylesheets / favicons
+        ("script", "src"), # JavaScript files
+    ]
+
+    urls = []
+    for tag, attr in tag_attr_pairs:
+        for element in soup.find_all(tag, attrs={attr: True}):
+            full_url = normalize_url(urljoin(page_url, element[attr]))
+            if full_url.startswith("http"):
+                urls.append(full_url)
+
+    return urls
 
 
 def probe_link(url, timeout):
@@ -219,11 +245,14 @@ def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
         if delay:
             time.sleep(delay)
 
-        for full_url in extract_page_links(current_page, response.text):
+        # Probe every resource URL (images, scripts, stylesheets, links).
+        for full_url in extract_page_resources(current_page, response.text):
             if full_url not in checked_links:
                 checked_links.add(full_url)
                 links_to_probe.append(full_url)
 
+        # Only follow <a> href links to discover new pages to crawl.
+        for full_url in extract_page_links(current_page, response.text):
             if not is_internal_url(full_url, base_netloc):
                 continue
 
@@ -288,7 +317,9 @@ def save_to_csv(problem_links, crawl_stats):
 
         writer.writerow(["Problem Links by Status"])
         writer.writerow(["status", "count"])
-        for status, count in sorted(status_counts.items(), key=lambda item: item[0]):
+        for status, count in sorted(
+            status_counts.items(), key=lambda item: item[0]
+        ):
             writer.writerow([status, count])
         writer.writerow([])
 
