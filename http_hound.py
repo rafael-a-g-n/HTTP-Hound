@@ -43,7 +43,7 @@ def is_internal_url(url, base_netloc):
 
 def fetch_page(url, session):
     """Fetch an HTML page for crawling."""
-    response = session.get(url, timeout=10)
+    response = session.get(url, headers=REQUEST_HEADERS, timeout=10)
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
@@ -69,7 +69,12 @@ def extract_page_links(page_url, html):
 def probe_link(url, session):
     """Check a link with HEAD first and retry with GET when needed."""
     try:
-        head_response = session.head(url, allow_redirects=True, timeout=5)
+        head_response = session.head(
+            url,
+            headers=REQUEST_HEADERS,
+            allow_redirects=True,
+            timeout=5,
+        )
         head_status = head_response.status_code
 
         if head_status < 400:
@@ -92,7 +97,13 @@ def probe_link(url, session):
 
     try:
         # Some sites reject HEAD requests but answer normally to GET.
-        get_response = session.get(url, allow_redirects=True, timeout=8, stream=True)
+        get_response = session.get(
+            url,
+            headers=REQUEST_HEADERS,
+            allow_redirects=True,
+            timeout=8,
+            stream=True,
+        )
         get_status = get_response.status_code
         final_url = get_response.url
         get_response.close()
