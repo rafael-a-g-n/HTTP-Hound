@@ -1,5 +1,9 @@
 # HTTP-Hound
 
+[![GitHub release](https://img.shields.io/github/v/release/rafael-a-g-n/HTTP-Hound)](https://github.com/rafael-a-g-n/HTTP-Hound/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+
 > A production-quality, multi-threaded broken link crawler for websites — built in pure Python.
 
 HTTP-Hound crawls a target site, probes every discovered link, image, stylesheet, and script, then produces structured reports (CSV and/or JSON) showing exactly what is broken, blocked, or redirecting too many times.
@@ -38,6 +42,12 @@ HTTP-Hound crawls a target site, probes every discovered link, image, stylesheet
 Install dependencies:
 
 ```bash
+pip install -r requirements.txt
+```
+
+Or install manually:
+
+```bash
 pip install requests beautifulsoup4 tqdm
 ```
 
@@ -59,6 +69,7 @@ python http_hound.py <url> [options]
 | `--max-depth D` | unlimited | Maximum BFS crawl depth from the base URL |
 | `--delay S` | `0` | Seconds to wait between page fetches |
 | `--format` | `csv` | Output format: `csv`, `json`, `html`, `both` (csv+json), or `all` |
+| `--version` | — | Print the version number and exit |
 
 ### Examples
 
@@ -196,8 +207,28 @@ url, status, classification, method, redirect_hops, redirect_chain, link_type, s
 ```
 HTTP-Hound/
 ├── http_hound.py   # Complete crawler — all logic in a single, readable file
+├── requirements.txt
+├── LICENSE
 └── README.md
 ```
+
+---
+
+## Changelog
+
+### v1.0.0 — 2026-04-12
+
+Initial public release.
+
+- Multi-threaded BFS crawler with configurable depth, workers, and delay
+- HEAD → GET fallback with retry and exponential backoff
+- robots.txt compliance
+- Redirect chain tracking (flags chains longer than 3 hops)
+- `source_page` field on every problem link for immediate actionability
+- Output formats: CSV (structured six-section report), JSON, and self-contained HTML
+- HTML report with stat cards and color-coded tables
+- `--version` flag
+- MIT license
 
 ---
 
