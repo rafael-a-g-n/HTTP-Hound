@@ -2,6 +2,8 @@ import argparse
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 import csv
+import time
+import urllib.robotparser
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
@@ -19,11 +21,24 @@ REQUEST_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+
 def build_session():
     """Create a session that looks closer to a browser request."""
     session = requests.Session()
     session.headers.update(REQUEST_HEADERS)
     return session
+
+
+def build_robots_parser(base_url):
+    """Fetch and parse the site's robots.txt; allow all if unavailable."""
+    parser = urllib.robotparser.RobotFileParser()
+    parser.set_url(urljoin(base_url, "/robots.txt"))
+    try:
+        parser.read()
+    except Exception:
+        # If robots.txt cannot be fetched, default to allowing everything.
+        pass
+    return parser
 
 
 def normalize_url(url):
@@ -39,7 +54,10 @@ def is_internal_url(url, base_netloc):
     """Return True when a URL belongs to the same site being crawled."""
     parsed_url = urlparse(url)
 
-    return parsed_url.scheme in {"http", "https"} and parsed_url.netloc == base_netloc
+    return (
+        parsed_url.scheme in {"http", "https"}
+        and parsed_url.netloc == base_netloc
+    )
 
 
 def fetch_page(url, session, timeout):
@@ -157,13 +175,19 @@ def record_result(results, url, result):
     print(f"[OK] {status} via {method} - {url}")
 
 
-def check_links(base_url, workers=10, timeout=10):
+def check_links(base_url, workers=10, timeout=10, max_depth=None, delay=0.0):
+    """Crawl base_url and probe all discovered links for breakage."""
     base_url = normalize_url(base_url)
     print(f"--- Starting crawl on: {base_url} ---")
 
     session = build_session()
     base_netloc = urlparse(base_url).netloc
-    pages_to_visit = deque([base_url])
+
+    # Load robots.txt once so every page fetch can be checked against it.
+    robots = build_robots_parser(base_url)
+
+    # Queue stores (url, depth) tuples for BFS traversal.
+    pages_to_visit = deque([(base_url, 0)])
     queued_pages = {base_url}
     visited_pages = set()
     checked_links = set()
@@ -171,8 +195,14 @@ def check_links(base_url, workers=10, timeout=10):
     links_to_probe = []
 
     while pages_to_visit:
-        current_page = pages_to_visit.popleft()
+        current_page, depth = pages_to_visit.popleft()
         print(f"Crawling page: {current_page}")
+
+        # Respect robots.txt before fetching each page.
+        if not robots.can_fetch("*", current_page):
+            print(f"Blocked by robots.txt: {current_page}")
+            visited_pages.add(current_page)
+            continue
 
         try:
             response = fetch_page(current_page, session, timeout)
@@ -185,6 +215,10 @@ def check_links(base_url, workers=10, timeout=10):
         if response is None:
             continue
 
+        # Pause between page fetches to avoid overwhelming the server.
+        if delay:
+            time.sleep(delay)
+
         for full_url in extract_page_links(current_page, response.text):
             if full_url not in checked_links:
                 checked_links.add(full_url)
@@ -196,8 +230,12 @@ def check_links(base_url, workers=10, timeout=10):
             if full_url in queued_pages or full_url in visited_pages:
                 continue
 
+            # Only enqueue child pages within the allowed depth.
+            if max_depth is not None and depth + 1 > max_depth:
+                continue
+
             queued_pages.add(full_url)
-            pages_to_visit.append(full_url)
+            pages_to_visit.append((full_url, depth + 1))
 
     print(
         f"\nProbing {len(links_to_probe)} unique links "
@@ -234,8 +272,12 @@ def save_to_csv(problem_links, crawl_stats):
         writer.writerow(["HTTP Hound Crawl Summary"])
         writer.writerow(["base_url", crawl_stats["base_url"]])
         writer.writerow(["pages_crawled", crawl_stats["pages_crawled"]])
-        writer.writerow(["unique_links_parsed", crawl_stats["unique_links_parsed"]])
-        writer.writerow(["problem_links_found", crawl_stats["problem_links_found"]])
+        writer.writerow(
+            ["unique_links_parsed", crawl_stats["unique_links_parsed"]]
+        )
+        writer.writerow(
+            ["problem_links_found", crawl_stats["problem_links_found"]]
+        )
         writer.writerow([])
 
         writer.writerow(["Problem Links by Type"])
@@ -281,9 +323,29 @@ def parse_args():
         metavar="S",
         help="Request timeout in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        metavar="D",
+        help="Maximum crawl depth from the base URL (default: unlimited)",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help="Seconds to wait between page fetches (default: 0)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    check_links(args.url, workers=args.workers, timeout=args.timeout)
+    check_links(
+        args.url,
+        workers=args.workers,
+        timeout=args.timeout,
+        max_depth=args.max_depth,
+        delay=args.delay,
+    )
