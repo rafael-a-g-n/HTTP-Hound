@@ -18,6 +18,8 @@ except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 
+__version__ = "1.0.0"
+
 # Retry config for transient network errors in probe_link.
 MAX_RETRIES = 2
 RETRY_BACKOFF = 1.0  # seconds to wait before each successive retry
@@ -767,6 +769,8 @@ def parse_args():
             "both (csv+json), or all (default: csv)"
         ),
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
     return parser.parse_args()
 
 
