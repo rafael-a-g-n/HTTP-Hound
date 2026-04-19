@@ -105,6 +105,24 @@ python http_hound.py https://example.com --workers 30 --timeout 20 --max-depth 5
 
 ---
 
+## Use Case Example
+
+Real-world run used for the screenshots below:
+
+```bash
+python http_hound.py https://centro-de-estudos.vercel.app/ --max-depth 2 --delay 0.5 --format html
+```
+
+What this demonstrates:
+- Fast, actionable scan output for a live site.
+- A clear HTML report with summary metrics and issue breakdowns.
+- Immediate visibility into external broken links for quick remediation.
+
+![image1](https://github.com/user-attachments/assets/fa2684ca-50c7-4b43-b4c0-b0a6a9a0d57a)
+![image2](https://github.com/user-attachments/assets/174b7c6d-cf60-4273-855a-2969996aa8bd)
+
+---
+
 ## Output
 
 Both report formats are saved in the working directory.
