@@ -118,8 +118,8 @@ What this demonstrates:
 - A clear HTML report with summary metrics and issue breakdowns.
 - Immediate visibility into external broken links for quick remediation.
 
-![image1](https://github.com/user-attachments/assets/fa2684ca-50c7-4b43-b4c0-b0a6a9a0d57a)
-![image2](https://github.com/user-attachments/assets/174b7c6d-cf60-4273-855a-2969996aa8bd)
+![image1 - HTML report overview with summary metrics](https://github.com/user-attachments/assets/fa2684ca-50c7-4b43-b4c0-b0a6a9a0d57a)
+![image2 - HTML report details highlighting broken external links](https://github.com/user-attachments/assets/174b7c6d-cf60-4273-855a-2969996aa8bd)
 
 ---
 
